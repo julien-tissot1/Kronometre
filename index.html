@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#123c35">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Arrivées">
+  <title>Arrivées des coureurs</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #17352f; background: #f0f5f2; }
+    * { box-sizing: border-box; }
+    body { margin: 0 auto; max-width: 760px; padding: 20px 16px max(28px, env(safe-area-inset-bottom)); }
+    h1 { margin: 0; font-size: 1.8rem; }
+    h2 { font-size: 1.15rem; }
+    p { line-height: 1.5; }
+    header { margin-bottom: 22px; }
+    #clock { font-size: 2rem; font-variant-numeric: tabular-nums; margin-top: 12px; }
+    .card { background: white; border: 1px solid #d5e0d9; border-radius: 16px; padding: 18px; margin: 16px 0; }
+    label { display: block; font-weight: 650; margin-bottom: 8px; }
+    textarea, input { width: 100%; font: inherit; padding: 12px; border: 1px solid #82998e; border-radius: 8px; }
+    textarea { min-height: 110px; resize: vertical; }
+    button { font: inherit; font-weight: 650; border: 1px solid #aebfb4; border-radius: 10px; padding: 12px 16px; background: white; color: #17352f; min-height: 48px; cursor: pointer; touch-action: manipulation; }
+    button:disabled { opacity: .45; cursor: default; }
+    button:focus-visible { outline: 3px solid #e89721; outline-offset: 3px; }
+    .primary, .bib { color: white; background: #123c35; border-color: #123c35; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .muted { color: #4a6458; font-size: .9rem; }
+    #bibs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .bib { min-height: 76px; padding: 10px 4px; font-size: 1.3rem; overflow-wrap: anywhere; }
+    #status { min-height: 1.5em; font-weight: 600; }
+    #error { color: #901c22; background: #fff0ef; border: 1px solid #901c22; border-radius: 10px; padding: 14px; }
+    #error:empty { display: none; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 12px 4px; text-align: left; border-bottom: 1px solid #e2e9e4; }
+    td:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    summary { cursor: pointer; padding: 10px 0; font-weight: 650; }
+    [hidden] { display: none !important; }
+    @media (max-width: 350px) { #bibs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Arrivées des coureurs</h1>
+    <div id="clock" aria-label="Heure actuelle"></div>
+    <p class="muted">L'heure de l'iPhone fait foi. Vérifiez son réglage automatique avant la course.</p>
+  </header>
+  <p id="error" role="alert"></p>
+  <section id="setup" class="card">
+    <h2>Préparer les dossards</h2>
+    <form id="setup-form">
+      <label for="numbers">Numéros des dossards</label>
+      <textarea id="numbers" placeholder="1, 2, 3, 10, 25…" required></textarea>
+      <p class="muted">Séparez les numéros par des espaces, virgules ou retours à la ligne. Les doublons sont refusés.</p>
+      <details>
+        <summary>Générer une série de numéros</summary>
+        <label for="first">Premier numéro</label>
+        <input id="first" type="number" min="0" max="999999" step="1" value="1">
+        <label for="count">Nombre de dossards (maximum 500)</label>
+        <input id="count" type="number" min="1" max="500" step="1" value="40">
+        <div class="actions"><button id="generate" type="button">Remplir la liste</button></div>
+      </details>
+      <div class="actions"><button class="primary" type="submit">Afficher les boutons</button></div>
+    </form>
+  </section>
+  <main id="race" hidden>
+    <p id="counts"></p>
+    <p class="muted">Touchez un dossard à l'arrivée : son heure est enregistrée et son bouton disparaît.</p>
+    <div id="bibs" aria-label="Dossards attendus"></div>
+    <p id="status" role="status" aria-live="polite"></p>
+    <div class="actions">
+      <button id="undo" type="button">Annuler la dernière arrivée</button>
+      <button id="export" type="button">Exporter le CSV</button>
+    </div>
+    <section class="card">
+      <h2>Arrivées enregistrées</h2>
+      <p class="muted">Historique de saisie, sans classement. Heures locales avec les secondes.</p>
+      <table>
+        <thead><tr><th>Dossard</th><th>Heure d'arrivée</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table>
+    </section>
+    <details class="card">
+      <summary>Nouvelle course</summary>
+      <p>Exportez les arrivées avant d'effacer cette course.</p>
+      <button id="reset" type="button">Effacer et recommencer</button>
+    </details>
+  </main>
+  <footer class="muted">
+    <p>Gratuit, sans compte ni publicité. Les données restent dans ce navigateur sur cet appareil.
+      Ne passez pas en navigation privée et n'effacez pas les données du site.
+      Exportez le CSV après la course. Gardez cette page ouverte pendant les arrivées.</p>
+  </footer>
+  <script>
+    'use strict';
+    const KEY = 'arrivees-coureurs-v1';
+    const element = id => document.getElementById(id);
+    let state = { bibs: [], arrivals: [] };
+    let storageReady = false;
+    const timeFormat = new Intl.DateTimeFormat('fr-FR', {
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    });
+    const showError = message => { element('error').textContent = message; };
+    const formatTime = timestamp => timeFormat.format(new Date(timestamp));
+
+    function validState(value) {
+      return value !== null && typeof value === 'object'
+        && Array.isArray(value.bibs) && value.bibs.length <= 500
+        && value.bibs.every(bib => typeof bib === 'string' && /^\d{1,6}$/.test(bib))
+        && new Set(value.bibs.map(Number)).size === value.bibs.length
+        && Array.isArray(value.arrivals)
+        && value.arrivals.every(arrival => arrival !== null
+          && typeof arrival === 'object'
+          && value.bibs.includes(arrival.bib)
+          && typeof arrival.at === 'string'
+          && Number.isFinite(Date.parse(arrival.at)))
+        && new Set(value.arrivals.map(arrival => arrival.bib)).size === value.arrivals.length;
+    }
+
+    function persist(next) {
+      if (!storageReady) {
+        showError("Le stockage est indisponible. Aucune saisie n'a été enregistrée. Autorisez le stockage puis rechargez la page.");
+        return false;
+      }
+      try {
+        localStorage.setItem(KEY, JSON.stringify(next));
+      } catch (error) {
+        showError("Échec de sauvegarde : " + error.message + ". La saisie n'a pas été validée. Exportez les données déjà enregistrées.");
+        return false;
+      }
+      state = next;
+      showError('');
+      render();
+      return true;
+    }
+
+    function render() {
+      const active = state.bibs.length > 0;
+      element('setup').hidden = !storageReady || active;
+      element('race').hidden = !active;
+      const arrived = new Set(state.arrivals.map(arrival => arrival.bib));
+      const pending = state.bibs.filter(bib => !arrived.has(bib));
+      element('counts').textContent = pending.length + ' attendu(s) · '
+        + arrived.size + ' arrivé(s) · ' + state.bibs.length + ' dossards';
+      element('bibs').replaceChildren();
+      for (const bib of pending) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'bib';
+        button.textContent = bib;
+        button.setAttribute('aria-label', 'Enregistrer l’arrivée du dossard ' + bib);
+        button.addEventListener('click', () => record(bib));
+        element('bibs').append(button);
+      }
+      element('undo').disabled = !storageReady || state.arrivals.length === 0;
+      element('export').disabled = state.arrivals.length === 0;
+      element('history').replaceChildren();
+      for (const arrival of state.arrivals) {
+        const row = document.createElement('tr');
+        const bibCell = document.createElement('td');
+        const timeCell = document.createElement('td');
+        bibCell.textContent = arrival.bib;
+        timeCell.textContent = formatTime(arrival.at);
+        row.append(bibCell, timeCell);
+        element('history').append(row);
+      }
+    }
+
+    function record(bib) {
+      const at = new Date().toISOString();
+      if (!state.bibs.includes(bib) || state.arrivals.some(arrival => arrival.bib === bib)) return;
+      if (persist({ ...state, arrivals: [...state.arrivals, { bib, at }] })) {
+        element('status').textContent = 'Dossard ' + bib + ' enregistré à ' + formatTime(at)
+          + (state.arrivals.length === state.bibs.length ? ' — Tous les coureurs sont arrivés.' : '');
+      }
+    }
+
+    element('generate').addEventListener('click', () => {
+      const firstText = element('first').value;
+      const countText = element('count').value;
+      const first = Number(firstText);
+      const count = Number(countText);
+      if (!firstText || !countText || !Number.isInteger(first) || first < 0
+        || !Number.isInteger(count) || count < 1 || count > 500 || first + count - 1 > 999999) {
+        showError('Indiquez un premier numéro entier positif ou nul et entre 1 et 500 dossards, de 0 à 999999.');
+        return;
+      }
+      element('numbers').value = Array.from({ length: count }, (_, index) => String(first + index)).join(', ');
+      showError('');
+    });
+
+    element('setup-form').addEventListener('submit', event => {
+      event.preventDefault();
+      const bibs = element('numbers').value.trim().split(/[\s,;]+/).filter(Boolean);
+      if (!bibs.length || bibs.length > 500 || bibs.some(bib => !/^\d{1,6}$/.test(bib))) {
+        showError('Saisissez entre 1 et 500 dossards, chacun composé de 1 à 6 chiffres.');
+        return;
+      }
+      if (new Set(bibs.map(Number)).size !== bibs.length) {
+        showError('Un dossard apparaît plusieurs fois (par exemple 01 et 1). Corrigez la liste.');
+        return;
+      }
+      persist({ bibs, arrivals: [] });
+    });
+
+    element('undo').addEventListener('click', () => {
+      const last = state.arrivals[state.arrivals.length - 1];
+      if (!last) return;
+      if (persist({ ...state, arrivals: state.arrivals.slice(0, -1) })) {
+        element('status').textContent = "Arrivée annulée : le dossard " + last.bib + ' est de nouveau disponible.';
+      }
+    });
+
+    element('export').addEventListener('click', () => {
+      const rows = ['Dossard;Date locale;Heure locale;Horodatage UTC'];
+      for (const arrival of state.arrivals) {
+        const date = new Date(arrival.at);
+        const localDate = date.getFullYear() + '-'
+          + String(date.getMonth() + 1).padStart(2, '0') + '-'
+          + String(date.getDate()).padStart(2, '0');
+        rows.push([arrival.bib, localDate, formatTime(arrival.at), arrival.at].join(';'));
+      }
+      const blob = new Blob(['\uFEFF' + rows.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'arrivees-' + new Date().toISOString().slice(0, 10) + '.csv';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    });
+
+    element('reset').addEventListener('click', () => {
+      if (!confirm('Effacer tous les dossards et toutes les arrivées ? Exportez le CSV avant de confirmer.')) return;
+      if (persist({ bibs: [], arrivals: [] })) element('status').textContent = '';
+    });
+
+    function load() {
+      try {
+        const raw = localStorage.getItem(KEY);
+        if (raw !== null) {
+          const saved = JSON.parse(raw);
+          if (!validState(saved)) throw new Error('Données de course invalides');
+          state = saved;
+        }
+        localStorage.setItem(KEY, JSON.stringify(state));
+        storageReady = true;
+      } catch (error) {
+        showError('Impossible de charger ou sauvegarder la course : ' + error.message
+          + ". Les données existantes ne sont pas effacées. Vérifiez le stockage du navigateur avant de continuer.");
+      }
+      render();
+    }
+    setInterval(() => { element('clock').textContent = formatTime(new Date()); }, 1000);
+    element('clock').textContent = formatTime(new Date());
+    load();
+  </script>
+</body>
+</html>
